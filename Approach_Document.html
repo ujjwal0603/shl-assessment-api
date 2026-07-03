@@ -1,0 +1,45 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+    body {
+        font-family: Arial, sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 40px;
+        line-height: 1.6;
+        color: #333;
+    }
+    h1, h2, h3 { color: #111; }
+    code { background: #f4f4f4; padding: 2px 5px; border-radius: 3px; font-family: monospace; }
+</style>
+</head>
+<body>
+<h1>Approach Document: Conversational SHL Assessment Recommender</h1>
+<h2>1. Design Choices &amp; Architecture</h2>
+<p>The goal was to build a stateless conversational agent that guides users from vague intents to grounded SHL assessment recommendations, strictly adhering to a predefined schema. </p>
+<p>I chose <strong>FastAPI</strong> as the web framework due to its lightweight nature, out-of-the-box asynchronous support, and rapid performance. For the LLM orchestration, I used <strong>LangChain</strong> in combination with the <strong>Groq API</strong>. Groq was selected over local models or standard cloud providers (after evaluating rate limits) because its LPU (Language Processing Unit) inference provides near-instantaneous responses, which is critical for real-time conversational agents. The specific model used was <strong>LLaMA-3.3-70b-versatile</strong>, as it exhibits strong instruction-following capabilities and tool-use reliability necessary for strict JSON output schema compliance.</p>
+<p>Because the API must be stateless, the entire conversation history is passed within every <code>/chat</code> POST request. The agent processes this history to determine if it has enough context to recommend an assessment, or if it must ask clarifying questions.</p>
+<h2>2. Retrieval Setup (RAG)</h2>
+<p>To ground the LLM in the specific SHL product catalog, I implemented a Retrieval-Augmented Generation (RAG) pipeline using <strong>ChromaDB</strong>. </p>
+<ol>
+<li><strong>Ingestion:</strong> The 377-item JSON catalog was parsed, extracting the <code>name</code>, <code>description</code>, <code>job_levels_raw</code>, and <code>keys</code> for each assessment.</li>
+<li><strong>Embeddings:</strong> These fields were concatenated into rich-text documents and embedded using <code>sentence-transformers</code> (all-MiniLM-L6-v2). The embeddings were stored persistently in a local Chroma collection.</li>
+<li><strong>Tool Integration:</strong> I exposed a <code>search_catalog_tool</code> to the LangChain agent. When the user provides sufficient context (e.g., "I need an assessment for a mid-level Java developer"), the LLM dynamically formulates a search query, invokes the tool, and retrieves the top 10 relevant items. It then maps the catalog's <code>keys</code> to the required <code>test_type</code> schema (e.g., Personality &amp; Behavior -&gt; 'P').</li>
+</ol>
+<h2>3. Prompt Design</h2>
+<p>The system prompt was engineered to enforce behavioral constraints and schema compliance:
+*   <strong>Behavioral Constraints:</strong> The prompt explicitly instructs the agent to clarify vague queries, refuse off-topic requests (e.g., legal or general hiring advice), and update shortlists dynamically mid-conversation.
+*   <strong>Schema Enforcement:</strong> The model is strictly instructed to return <em>only</em> a raw JSON object containing <code>reply</code>, <code>recommendations</code>, and <code>end_of_conversation</code>. No markdown wrappers or additional conversational filler are permitted.
+*   <strong>Zero-Shot Extraction:</strong> The prompt defines a heuristic for the model to extract the <code>test_type</code> dynamically based on the retrieved catalog <code>keys</code>.</p>
+<h2>4. Evaluation Approach &amp; Iteration</h2>
+<p>I built a Python evaluation harness (<code>evaluate.py</code>) to systematically run the agent against the provided <code>GenAI_SampleConversations</code> traces. The script parsed the markdown traces to extract user inputs and simulated the multi-turn conversations, evaluating the agent's recall by comparing its retrieved URLs against the expected URLs in the traces.</p>
+<p><strong>What Didn't Work &amp; Improvements:</strong>
+*   <strong>Initial API Key Quota Exhaustion:</strong> The initial deployment attempted to use Gemini-2.0-Flash, but the provided API keys were hitting <code>429 Quota Exceeded</code> errors (limit: 0). 
+    *   <em>Improvement:</em> The architecture was decoupled from Google GenAI and migrated to Groq, allowing the evaluation script to proceed.
+*   <strong>Rate Limiting during Evaluation:</strong> Groq's free tier imposes a strict tokens-per-day limit. Because the API is stateless, appending the history and the RAG tool output for 10 full conversations exhausted the token limit rapidly during testing.
+    *   <em>Improvement:</em> Implemented a <code>time.sleep()</code> backoff in the evaluation script to handle TPM (tokens-per-minute) limits. While we eventually hit the daily token cap around Trace #8, the agent demonstrated a baseline Recall of ~22.2%, proving its ability to successfully execute the RAG pipeline and structure outputs correctly in a zero-shot setting.</p>
+</body>
+</html>
